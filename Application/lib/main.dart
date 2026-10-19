@@ -453,7 +453,7 @@ class _TrackerHomeState extends State<TrackerHome> {
                     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                   ),
                   icon: const Icon(Icons.play_arrow, color: Colors.blueAccent),
-                  label: Text(currentSystemState == SystemState.playing ? "Playing (${playbackIndex}/${recordedShotMemory.length})" : "Playback"),
+                  label: Text(currentSystemState == SystemState.playing ? "Playing" : "Playback"),
                   onPressed: currentSystemState == SystemState.idle && recordedShotMemory.isNotEmpty ? startPlayback : null,
                 ),
               ],
@@ -525,6 +525,27 @@ class TargetPainter extends CustomPainter {
 
       canvas.drawCircle(clickPos, 16, clickerPaint);
       canvas.drawCircle(clickPos, 3, Paint()..color = Colors.amberAccent..style = PaintingStyle.fill);
+      final textSpan = TextSpan(
+        text: "CLICKER",
+        style: TextStyle(
+          color: Colors.amberAccent,
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+          letterSpacing: 1.0,
+          background: Paint()
+            ..color = Colors.black.withValues(alpha: 0.6)
+            ..style = PaintingStyle.fill,
+        ),
+      );
+
+      final textPainter = TextPainter(
+        text: textSpan,
+        textDirection: TextDirection.ltr,
+      );
+      textPainter.layout();
+
+      // Offset label slightly above and to the right of the marker
+      textPainter.paint(canvas, Offset(clickPos.dx + 20, clickPos.dy - 6));
     }
   }
 

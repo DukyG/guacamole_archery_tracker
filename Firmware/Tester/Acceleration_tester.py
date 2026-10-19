@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from collections import deque
 
 # --- CONFIGURATION ---
-SERIAL_PORT = "COM3"  # Replace with your actual port (e.g., "COM5" or "/dev/ttyUSB0")
+SERIAL_PORT = "COM4"  # Replace with your actual port (e.g., "COM5" or "/dev/ttyUSB0")
 BAUD_RATE = 115200
 MAX_POINTS = 100  # Number of scrolling points visible on screen
 OUTPUT_IMAGE = "live_g_force_profile.png"
