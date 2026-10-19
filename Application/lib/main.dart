@@ -55,6 +55,7 @@ class _TrackerHomeState extends State<TrackerHome> {
   SystemState currentSystemState = SystemState.idle;
   List<Offset> recordedShotMemory = [];
   List<double> recordedCantMemory = []; // Records the cant history during a shot
+  int? clickerFrameIndex;
   Timer? playbackTimer;
   int playbackIndex = 0;
 
@@ -128,7 +129,7 @@ class _TrackerHomeState extends State<TrackerHome> {
       if (currentSystemState == SystemState.playing) return;
 
       // Verifying the expanded 12-byte payload package arrived intact
-      if (value.length == 12) {
+      if (value.length >= 13) {
         final bytes = ByteData.sublistView(Uint8List.fromList(value));
 
         // 1. Unload Accelerometer Gravity Metrics (Bytes 0-5)
@@ -139,6 +140,10 @@ class _TrackerHomeState extends State<TrackerHome> {
         // 2. Unload Gyroscope Rotational Velocities (Bytes 6-11)
         int gx = bytes.getInt16(6, Endian.big);
         int gy = bytes.getInt16(8, Endian.big);
+
+        // 3. Unload Clicker Status Flag(Byte 12)
+        int clickerFlag = bytes.getUint8(12); //1 = Clicker dropped, 0 = Normal
+        bool isClickerDropped = (clickerFlag == 1);
 
         setState(() {
           // --- SIGHT CROSSHAIRS (Gyro Data) ---
@@ -161,6 +166,11 @@ class _TrackerHomeState extends State<TrackerHome> {
           if (currentSystemState == SystemState.recording) {
             recordedShotMemory.add(Offset(liveX, liveY));
             recordedCantMemory.add(cantingValue);
+          }
+
+          if(isClickerDropped){
+            clickerFrameIndex = recordedShotMemory.length - 1;
+            print("Clicker dropped");
           }
         });
       }
@@ -211,6 +221,7 @@ class _TrackerHomeState extends State<TrackerHome> {
         recordedCantMemory.clear();
         finalShotScore = 0.0;
         hasCalculatedScore = false;
+        clickerFrameIndex = null;
         currentSystemState = SystemState.recording;
       } else if (currentSystemState == SystemState.recording) {
         currentSystemState = SystemState.idle;
@@ -471,8 +482,12 @@ class TargetPainter extends CustomPainter {
   final double xOffset;
   final double yOffset;
   final Color dotColor;
+  final Offset? clickerPosition;
 
-  TargetPainter({required this.xOffset, required this.yOffset, required this.dotColor});
+  TargetPainter({required this.xOffset,
+    required this.yOffset,
+    required this.dotColor,
+    this.clickerPosition});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -494,10 +509,30 @@ class TargetPainter extends CustomPainter {
 
     canvas.drawCircle(dotPosition, 7, Paint()..color = dotColor..style = PaintingStyle.fill);
     canvas.drawCircle(dotPosition, 14, Paint()..color = dotColor.withValues(alpha: 0.3)..style = PaintingStyle.stroke..strokeWidth = 2);
+    if (clickerPosition != null) {
+      double clickX = center.dx + (clickerPosition!.dx / 1500.0) * maxRadius;
+      double clickY = center.dy - (clickerPosition!.dy / 1500.0) * maxRadius;
+      Offset clickPos = Offset(
+        clickX.clamp(12.0, size.width - 12.0),
+        clickY.clamp(12.0, size.height - 12.0),
+      );
+
+      // Gold marker circle where the click occurred
+      final clickerPaint = Paint()
+        ..color = Colors.amberAccent
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0;
+
+      canvas.drawCircle(clickPos, 16, clickerPaint);
+      canvas.drawCircle(clickPos, 3, Paint()..color = Colors.amberAccent..style = PaintingStyle.fill);
+    }
   }
 
   @override
   bool shouldRepaint(covariant TargetPainter oldDelegate) {
-    return oldDelegate.xOffset != xOffset || oldDelegate.yOffset != yOffset || oldDelegate.dotColor != dotColor;
+    return oldDelegate.xOffset != xOffset ||
+        oldDelegate.yOffset != yOffset ||
+        oldDelegate.dotColor != dotColor ||
+        oldDelegate.clickerPosition != clickerPosition;
   }
 }
