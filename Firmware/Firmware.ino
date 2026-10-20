@@ -19,7 +19,8 @@ struct ArcheryData {
 
 QueueHandle_t dataQueue;
 volatile bool clickerDetected = false;
-volatile uint32_t clickerTimestamp = 0;
+volatile bool bleClickerLatch = false; // Ensures BLE doesn't miss the 5ms pulse
+const double CLICK_THRESHOLD = 1100.0;
 
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) { deviceConnected = true; };
@@ -28,12 +29,14 @@ class MyServerCallbacks: public BLEServerCallbacks {
 
 void IRAM_ATTR clickerISR() {
   clickerDetected = true;
-  clickerTimestamp = millis();
+  bleClickerLatch = true; // Hold for BLE task
 }
+
 void setMPU6050to8G() {
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x1C);
-  Wire.write(0x10);
+  // FS_SEL = 2 (+/-8g) and ACCEL_HPF = 1 (5Hz High Pass filter enabled for motion engine)
+  Wire.write(0x11);
   Wire.endTransmission();
   delay(10);
   Serial.println("[✓] MPU6050 calibrated to +/- 8G limit!");
@@ -41,6 +44,8 @@ void setMPU6050to8G() {
 
 void configureMPU6050Interrupt() {
   pinMode(MPU_INT_PIN, INPUT);
+
+  // Clear any existing interrupt flag
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x3A); // INT_STATUS
   Wire.endTransmission(false);
@@ -49,7 +54,7 @@ void configureMPU6050Interrupt() {
 
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x1F); // MOT_THR
-  Wire.write(0x2F); 
+  Wire.write(0x20); // Sensitivity threshold
   Wire.endTransmission();
 
   Wire.beginTransmission(MPU_ADDR);
@@ -57,18 +62,19 @@ void configureMPU6050Interrupt() {
   Wire.write(0x01);
   Wire.endTransmission();
 
+  // FIX: Enable INT_RD_CLEAR (bit 4 = 0x10) so any I2C read auto-clears the interrupt
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x37); // INT_PIN_CFG
-  Wire.write(0x00);
+  Wire.write(0x10); 
   Wire.endTransmission();
 
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x38); // INT_ENABLE
-  Wire.write(0x40); 
+  Wire.write(0x40); // MOT_EN
   Wire.endTransmission();
 
   attachInterrupt(digitalPinToInterrupt(MPU_INT_PIN), clickerISR, RISING);
-  Serial.println("[✓] Hardware Motion Detection armed at 1.5G!");
+  Serial.println("[✓] Hardware Motion Detection armed!");
 }
 
 void TaskReadSensor(void *pvParameters);
@@ -82,7 +88,7 @@ void setup() {
   delay(500);
   
   Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x6B); 
+  Wire.write(0x6B); // PWR_MGMT_1
   Wire.write(0x00);    
   Wire.endTransmission();
   delay(100);
@@ -91,7 +97,7 @@ void setup() {
   configureMPU6050Interrupt();
 
   Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x1B); 
+  Wire.write(0x1B); // Gyro +/- 500 deg/s
   Wire.write(0x08);
   Wire.endTransmission();
 
@@ -99,7 +105,10 @@ void setup() {
   BLEServer *pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
   BLEService *pService = pServer->createService(SERVICE_UUID);
-  pCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID, BLECharacteristic::PROPERTY_NOTIFY);
+  pCharacteristic = pService->createCharacteristic(
+      CHARACTERISTIC_UUID, 
+      BLECharacteristic::PROPERTY_NOTIFY
+  );
   pCharacteristic->addDescriptor(new BLE2902());
   pService->start();
   pServer->getAdvertising()->start();
@@ -139,10 +148,10 @@ void TaskReadSensor(void *pvParameters) {
       uint8_t tempHigh = Wire.read();
       uint8_t tempLow  = Wire.read();
       
-      currentSample.buffer[6] = Wire.read(); // Gyro X High
-      currentSample.buffer[7] = Wire.read(); // Gyro X Low
-      currentSample.buffer[8] = Wire.read(); // Gyro Y High
-      currentSample.buffer[9] = Wire.read(); // Gyro Y Low
+      currentSample.buffer[6] = Wire.read();  // Gyro X High
+      currentSample.buffer[7] = Wire.read();  // Gyro X Low
+      currentSample.buffer[8] = Wire.read();  // Gyro Y High
+      currentSample.buffer[9] = Wire.read();  // Gyro Y Low
       currentSample.buffer[10] = Wire.read(); // Gyro Z High
       currentSample.buffer[11] = Wire.read(); // Gyro Z Low
 
@@ -151,19 +160,24 @@ void TaskReadSensor(void *pvParameters) {
       int16_t rawZ = (currentSample.buffer[4] << 8) | currentSample.buffer[5];
       
       double currentRawAccel = sqrt((double)rawX * rawX + (double)rawY * rawY + (double)rawZ * rawZ);
-
       double filteredAccel = alpha * (lastFilteredAccel + currentRawAccel - lastRawAccel);
       
       lastRawAccel = currentRawAccel;
       lastFilteredAccel = filteredAccel;
-
+      if (filteredAccel > CLICK_THRESHOLD) {
+        clickerDetected = true;
+        bleClickerLatch = true;
+}
+      // Latch flag check
       if (clickerDetected) {
         currentSample.buffer[12] = 1;
         clickerDetected = false;
       } else {
         currentSample.buffer[12] = 0;
       }
-      Serial.println(filteredAccel);
+
+      // FIX: Print actual buffer value (not the already-cleared variable)
+      Serial.printf("%.2f,%d\n", filteredAccel, currentSample.buffer[12]);
       
       xQueueSend(dataQueue, &currentSample, 0);
     }
@@ -177,6 +191,11 @@ void TaskSendBLE(void *pvParameters) {
   for(;;) {
     if (xQueueReceive(dataQueue, &receivedSample, portMAX_DELAY)) {
       if (deviceConnected) {
+        // FIX: If the hardware interrupt fired between packets, force byte 12 to 1
+        if (bleClickerLatch) {
+          receivedSample.buffer[12] = 1;
+          bleClickerLatch = false; // Reset only after packing into BLE
+        }
         pCharacteristic->setValue(receivedSample.buffer, 13);
         pCharacteristic->notify();
       }
