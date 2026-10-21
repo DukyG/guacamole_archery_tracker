@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <application
-        android:label="True Hold"
+        android:label="Guacamole Tracker"
         android:icon="@mipmap/ic_launcher">
 
         <activity
